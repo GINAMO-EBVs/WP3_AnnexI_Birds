@@ -1,0 +1,1493 @@
+---
+title: "Indicator assessments of Annex I Bird species"
+author: "Caroline Mouton"
+date: "2026-02-05"
+output: html_document
+---
+## Load packages
+```{r}
+# Data Import & export
+library(readxl)
+library(readr)
+
+# Visualization
+library(ggplot2)
+library(ggbeeswarm)
+library(ggeffects)
+library(patchwork)
+
+# Modeling & Statistics
+library(lme4)
+library(lmerTest)  # p-values for lmer
+library(afex)      # ANOVA wrappers
+library(car)       # Type II/III tests and VIF
+library(splines)   # Regression splines
+
+# Post-hoc & Summaries
+library(multcomp) # loaded before dplyr to prevent masking of dplyr::select
+library(emmeans)
+library(broom.mixed)
+library(rcompanion)
+
+# Data Manipulation
+library(dplyr)
+library(tidyr)
+library(purrr)
+```
+## Data input
+```{r}
+df <- read_xlsx("xx/metadata.xlsx")  # xx -> change directory accordingly
+```
+
+1. Calculate the Ne500-indicator, per species Ne500 = (#pops Ne>=500)/(#total pops), df has information per row on nc-estimates per population and either a 1 or 0 according to whether or not the Ne-value, based on the Ne/Nc-ratio, is above (or equal to) 500 (=1) or below 500 (=0). TL;DR: a row = a population of a species, rows also store info on whether or not Ne per population is >=500 (1 or 0). 
+```{r}
+# make df with per species information
+df_species <- df %>%
+  # per species
+  group_by(`scientificname`) %>%
+  summarise(
+  # Nc per species with NA info kept
+  Nc_min_2018_species  = if (all(is.na(Nmin_2018_unit2i))) NA_real_ else sum(Nmin_2018_unit2i, na.rm = TRUE),
+  Nc_max_2018_species  = if (all(is.na(Nmax_2018_unit2i))) NA_real_ else sum(Nmax_2018_unit2i, na.rm = TRUE),
+  Nc_mean_2018_species = if (all(is.na(N_mean_2018))) NA_real_ else sum(N_mean_2018, na.rm = TRUE),
+  
+  Nc_min_2012_species  = if (all(is.na(Nmin_2012_unit2i))) NA_real_ else sum(Nmin_2012_unit2i, na.rm = TRUE),
+  Nc_max_2012_species  = if (all(is.na(Nmax_2012_unit2i))) NA_real_ else sum(Nmax_2012_unit2i, na.rm = TRUE),
+  Nc_mean_2012_species = if (all(is.na(N_mean2012))) NA_real_ else sum(N_mean2012, na.rm = TRUE),
+
+  # ST-change
+  ST_change_min = if_else(
+    !is.na(Nc_min_2018_species) & !is.na(Nc_min_2012_species) & (Nc_min_2018_species + Nc_min_2012_species) > 0,
+    ((Nc_min_2018_species - Nc_min_2012_species) /
+     (Nc_min_2018_species + Nc_min_2012_species)) * 100,
+    NA_real_
+  ),
+  
+  ST_change_max = if_else(
+    !is.na(Nc_max_2018_species) & !is.na(Nc_max_2012_species) & (Nc_max_2018_species + Nc_max_2012_species) > 0,
+    ((Nc_max_2018_species - Nc_max_2012_species) /
+     (Nc_max_2018_species + Nc_max_2012_species)) * 100,
+    NA_real_
+  ),
+  
+  ST_change_mean = if_else(
+    !is.na(Nc_mean_2018_species) & !is.na(Nc_mean_2012_species) & (Nc_mean_2018_species + Nc_mean_2012_species) > 0,
+    ((Nc_mean_2018_species - Nc_mean_2012_species) /
+     (Nc_mean_2018_species + Nc_mean_2012_species)) * 100,
+    NA_real_
+  ),
+    # ---- ne500_1_min ----
+    # Ne/Nc = 0.1; based on minimum Nc-estimates
+    # number of populations per species with Ne>=500
+    # in this case we calculate how many populations (= rows) per species have a ne >= 500 for ne/nc_min = 0.1
+    # value in column ne500_1_2018_min equals 1
+    n_ones_1_min  = sum(ne500_1_2018min == 1, na.rm = TRUE),
+    # number of populations per species with Ne<500
+    # in this case we look how many populations (= rows) per species have a ne < 500 for ne/nc_min = 0.1
+    # value in column ne500_1_2018_min equals 0
+    n_zeros_1_min = sum(ne500_1_2018min == 0, na.rm = TRUE),
+    # proportion = Ne500-value
+    prop_ones_1_min = if_else(
+      n_ones_1_min + n_zeros_1_min > 0,
+      # formula Ne500 calculation
+      n_ones_1_min / (n_ones_1_min + n_zeros_1_min),
+      NA_real_
+    ),
+    # ---- ne500_2_min ----
+    # Ne/Nc = 0.2; based on minimum Nc-estimates
+    n_ones_2_min  = sum(ne500_2_2018min == 1, na.rm = TRUE),
+    n_zeros_2_min = sum(ne500_2_2018min == 0, na.rm = TRUE),
+    prop_ones_2_min = if_else(
+      n_ones_2_min + n_zeros_2_min > 0,
+      n_ones_2_min / (n_ones_2_min + n_zeros_2_min),
+      NA_real_
+    ),
+    
+    # ---- ne500_4_min ----
+    # Ne/Nc = 0.4; based on minimum Nc-estimates
+    n_ones_4_min  = sum(ne500_4_2018min == 1, na.rm = TRUE),
+    n_zeros_4_min = sum(ne500_4_2018min== 0, na.rm = TRUE),
+    prop_ones_4_min = if_else(
+      n_ones_4_min + n_zeros_4_min > 0,
+      n_ones_4_min / (n_ones_4_min + n_zeros_4_min),
+      NA_real_
+    ),
+    
+    # ---- ne500_1_max ----
+    # Ne/Nc = 0.1; based on maximum Nc-estimates
+    n_ones_1_max  = sum(ne500_1_2018max == 1, na.rm = TRUE),
+    n_zeros_1_max = sum(ne500_1_2018max == 0, na.rm = TRUE),
+    prop_ones_1_max = if_else(
+      n_ones_1_max + n_zeros_1_max > 0,
+      n_ones_1_max / (n_ones_1_max + n_zeros_1_max),
+      NA_real_
+    ),
+    
+    # ---- ne500_2_max ----
+    # Ne/Nc = 0.2; based on maximum Nc-estimates
+    n_ones_2_max  = sum(ne500_2_2018max == 1, na.rm = TRUE),
+    n_zeros_2_max = sum(ne500_2_2018max == 0, na.rm = TRUE),
+    prop_ones_2_max = if_else(
+      n_ones_2_max + n_zeros_2_max > 0,
+      n_ones_2_max / (n_ones_2_max + n_zeros_2_max),
+      NA_real_
+    ),
+    
+    # ---- ne500_4_max ----
+    # Ne/Nc = 0.4; based on maximum Nc-estimates
+    n_ones_4_max  = sum(ne500_4_2018max == 1, na.rm = TRUE),
+    n_zeros_4_max = sum(ne500_4_2018max == 0, na.rm = TRUE),
+    prop_ones_4_max = if_else(
+      n_ones_4_max + n_zeros_4_max > 0,
+      n_ones_4_max / (n_ones_4_max + n_zeros_4_max),
+      NA_real_
+    ),
+    # ---- ne500_1_mean ----
+    # Ne/Nc = 0.1; based on mean Nc-estimates
+    n_ones_1_mean  = sum(ne500_1_2018mean == 1, na.rm = TRUE),
+    n_zeros_1_mean = sum(ne500_1_2018mean == 0, na.rm = TRUE),
+    prop_ones_1_mean = if_else(
+      n_ones_1_mean + n_zeros_1_mean > 0,
+      n_ones_1_mean / (n_ones_1_mean + n_zeros_1_mean),
+      NA_real_
+    ),
+    
+    # ---- ne500_2_mean ----
+    # Ne/Nc = 0.2; based on mean Nc-estimates
+    n_ones_2_mean  = sum(ne500_2_2018mean == 1, na.rm = TRUE),
+    n_zeros_2_mean = sum(ne500_2_2018mean == 0, na.rm = TRUE),
+    prop_ones_2_mean = if_else(
+      n_ones_2_mean + n_zeros_2_mean > 0,
+      n_ones_2_mean / (n_ones_2_mean + n_zeros_2_mean),
+      NA_real_
+    ),
+    
+    # ---- ne500_4_mean ----
+    # Ne/Nc = 0.4; based on mean Nc-estimates
+    n_ones_4_mean  = sum(ne500_4_2018mean == 1, na.rm = TRUE),
+    n_zeros_4_mean = sum(ne500_4_2018mean == 0, na.rm = TRUE),
+    prop_ones_4_mean = if_else(
+      n_ones_4_mean + n_zeros_4_mean > 0,
+      n_ones_4_mean / (n_ones_4_mean + n_zeros_4_mean),
+      NA_real_
+    ),
+    
+    .groups = "drop"
+  )
+
+# add proportions (= ne500-indicator) and ST-change to df
+df <- df %>%
+  left_join(
+    df_species %>%
+      select(`scientificname`, prop_ones_1_min, prop_ones_2_min, prop_ones_4_min, prop_ones_1_max, prop_ones_2_max, prop_ones_4_max, prop_ones_1_mean, prop_ones_2_mean, prop_ones_4_mean, ST_change_min, ST_change_max, ST_change_mean, Nc_min_2018_species, Nc_max_2018_species,Nc_mean_2018_species,Nc_min_2012_species,Nc_max_2012_species,Nc_mean_2012_species),
+    by = "scientificname"
+  )
+
+# Count number of populations per species
+pop_count <- df %>%
+  group_by(scientificname) %>%
+  summarise(num_populations = n_distinct(popno))
+df <- df %>%
+  left_join(pop_count, by = "scientificname")  # <- assign back to df!
+
+# save as csv
+# write.csv(df, "xx/choose_filename.csv", row.names = FALSE)
+```
+2. Make df more compact and create a df with only one row per species and all the information needed for further analysis
+```{r}
+# one row per species; info on Ne500 results (stored in "prop_" columns) and red list status
+df_unique <- df %>%
+  group_by(scientificname) %>%
+  summarise(
+    # --- NE500 values ---
+    prop_ones_1_min  = first(prop_ones_1_min),
+    prop_ones_2_min  = first(prop_ones_2_min),
+    prop_ones_4_min  = first(prop_ones_4_min),
+    prop_ones_1_max  = first(prop_ones_1_max),
+    prop_ones_2_max  = first(prop_ones_2_max),
+    prop_ones_4_max  = first(prop_ones_4_max),
+    prop_ones_1_mean = first(prop_ones_1_mean),
+    prop_ones_2_mean = first(prop_ones_2_mean),
+    prop_ones_4_mean = first(prop_ones_4_mean),
+    # --- red lists ---
+    IUCN_redlist = first(IUCN_redlist),
+    EU_redlist   = first(EU_redlist),
+    # --- red lists simplified ---
+    IUCN_redlist2 = first(IUCN_redlist2),
+    EU_redlist2   = first(EU_redlist2),
+    # --- # populations per species ---
+    num_populations = first(num_populations),
+    # --- # migratory status per species ---
+    migration_status = first(migration_status),
+    # --- # ecosystyem per species ---
+    ecosystem_cat = first(ecosystem_cat),
+    # --- # generation length per species ---
+    generation_length = first(generation_length),
+    # --- # occurrence per species ---
+    occurrence = first(occurrence),
+    # --- # GM per species ---
+    GM = first(GM), 
+    # --- # LT change per species ---
+    LT_change = first(Change_index), 
+    # --- # ST change per species ---
+    ST_change_min = first(ST_change_min),
+    ST_change_max = first(ST_change_max),
+    ST_change_mean = first(ST_change_mean),
+    PM = first(PM),
+    .groups = "drop"
+  )
+
+# save as csv
+# in what follows xx indicates your directory
+# write.csv(df_unique, "xx/choose_filename.csv", row.names = FALSE) 
+```
+
+We now have a df (df_unique) in which all information is found for further analyses. Next step is to visualize the overall distribution of Ne500-values and to test how Ne500 relates to the different species characteristics (number of populations per species, occurrence, generation length, IUCN Red list assessment, EU Red list assessment, migration strategy). First, let's make a new df (so df_unique remains unchanged) to be used for further analyses:
+1.Visualization PM
+```{r}
+# 1.5. Visualisatie van PM verdeling
+# Round PM to 2 decimals
+df_unique$PM <- round(df_unique$PM, 2)
+
+# Convert PM to factor for categorical plotting
+df_unique$PM <- as.factor(df_unique$PM)
+
+# Count species per PM
+counts_PM <- df_unique %>% group_by(PM) %>% summarise(count = n())
+
+# Barplot
+PM_plot <- ggplot(counts_PM, aes(x = PM, y = count)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = count), vjust = -0.5, size = 3) +  # counts above bars
+  labs(x = "PM-indicator", y = "Number of species") +
+  theme_minimal() + 
+  theme(legend.position="none")
+PM_plot
+
+PM_plot_bigger <- ggplot(counts_PM, aes(x = PM, y = count)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = count), vjust = -0.5, size = 5) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +  # ADDED: 15% extra space on top
+  labs(x = "PM-indicator", y = "Number of species") +
+  theme_minimal() + 
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 16, face = "bold"),
+    axis.text = element_text(size = 14)
+  )
+
+PM_plot_bigger
+ggsave(
+  filename = "xx/choose_filename.png",
+  plot = PM_plot_bigger,
+  width = 180,        # mm, standard single column width for most journals
+  height = 130,       # mm
+  units = "mm",
+  dpi = 600,          # minimum for most journals (some require 600 for line art)
+  bg = "white"        # ensures white background
+)
+```
+2. Visualization long-term and short-term change 
+2.1 Long-term change (EBBA-based)
+```{r}
+# Define shared factor levels and colors
+levels_trend <- c("Declining","Stable","Increasing","Unknown")
+
+fill_colors <- c(
+  "Declining" = "#fdb863",
+  "Stable" = "#b2abd2",
+  "Increasing" = "#2c7bb6",
+  "Unknown" = "grey"
+)
+
+# Prepare LT data
+df_unique <- df_unique %>%
+  mutate(
+    Trend_LT = case_when(
+      is.na(LT_change) ~ "Unknown",
+      LT_change < -5 ~ "Declining",
+      LT_change >= -5 & LT_change <= 5 ~ "Stable",
+      LT_change > 5 ~ "Increasing",
+      TRUE ~ "Unknown"
+    )
+  )
+
+trend_percentages_single_LT <- df_unique %>%
+  group_by(Trend_LT) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  mutate(Percentage = (Count / sum(Count)) * 100)
+
+trend_percentages_single_LT$Trend_LT <- factor(trend_percentages_single_LT$Trend_LT, levels = levels_trend)
+
+trend_percentages_single_LT <- trend_percentages_single_LT %>%
+  rename(Trend = Trend_LT)
+
+pie_LT_EBBA <- ggplot(trend_percentages_single_LT, aes(x = "", y = Percentage, fill = Trend)) + 
+  geom_bar(stat = "identity", width = 1) + 
+  coord_polar(theta = "y") + 
+  geom_text(aes(label = paste0(round(Percentage,1), "%")), 
+            position = position_stack(vjust = 0.5), size = 5.5) + 
+  labs(title = "a. Long-term change") + 
+  theme_void() + 
+  scale_fill_manual(values = fill_colors) +
+  theme(
+    plot.title = element_text(size = 25),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 15),
+    legend.key.size = unit(0.5, "cm")
+  )
+
+# Prepare ST data
+df_unique <- df_unique %>%
+  mutate(
+    Trend_ST_mean = case_when(
+      is.na(ST_change_mean) ~ "Unknown",
+      ST_change_mean < -5 ~ "Declining",
+      ST_change_mean >= -5 & ST_change_mean <= 5 ~ "Stable",
+      ST_change_mean > 5 ~ "Increasing",
+      TRUE ~ "Unknown"
+    )
+  )
+
+trend_percentages_single_ST_mean <- df_unique %>%
+  group_by(Trend_ST_mean) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  mutate(Percentage = (Count / sum(Count)) * 100)
+
+trend_percentages_single_ST_mean$Trend_ST_mean <- factor(trend_percentages_single_ST_mean$Trend_ST_mean, levels = levels_trend)
+
+
+trend_percentages_single_ST_mean <- trend_percentages_single_ST_mean %>%
+  rename(Trend = Trend_ST_mean)
+
+pie_ST <- ggplot(trend_percentages_single_ST_mean, aes(x = "", y = Percentage, fill = Trend)) + 
+  geom_bar(stat = "identity", width = 1) + 
+  coord_polar(theta = "y") + 
+  geom_text(aes(label = paste0(round(Percentage,1), "%")), 
+            position = position_stack(vjust = 0.5), size = 5.5) + 
+  labs(title = "b. Short-term change") + 
+  theme_void() + 
+  scale_fill_manual(values = fill_colors) +
+  theme(
+    plot.title = element_text(size = 25),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 15),
+    legend.key.size = unit(0.5, "cm")
+  )
+
+# Combine LT and ST pies with shared legend and global title
+combined_pies <- (pie_LT_EBBA | pie_ST) + 
+  plot_layout(guides = "collect") &  
+  theme(legend.position = "right")
+
+
+combined_pies2 <- (pie_LT_EBBA | pie_ST) + 
+  plot_layout(guides = "collect") &  
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 16, face = "bold"),  
+    legend.text = element_text(size = 14),                
+    legend.title = element_text(size = 16, face = "bold"),
+    legend.key.size = unit(1, "cm")                       
+  )
+
+combined_pies2
+#ggsave("choose_filename.png", combined_pies, width = 12, height = 6, dpi = 300)
+#write.csv(df_unique, "xx/choose_filename.csv", row.names = FALSE)
+ggsave(
+  filename = "xx/suppfig1.png",
+  plot = combined_pies2,
+  width = 240,
+  height = 120,
+  units = "mm",
+  dpi = 600,
+  bg = "white"
+)
+```
+3. Visualization overall distribution of Ne500-values in the dataset. 
+3.1. Create new dfs especially for visualization and lm analyses 
+```{r}
+df_relations <- df_unique
+
+# df to long-format
+df_relations_long <- df_relations %>%
+  pivot_longer(
+    cols = starts_with("prop_ones"),
+    names_to = "measure",   # e.g. "prop_ones_1_max"
+    values_to = "Ne500"
+  ) %>%
+  separate(
+    measure,
+    into = c(NA, NA, "scenario", "Nc-estimate"),  
+    sep = "_",
+    remove = TRUE                             # e.g. column "prop_ones_1_max" into columns NA, NA, "1" and "max"
+  ) %>%
+  mutate(IUCN_redlist = factor(
+      IUCN_redlist,
+      levels = c("CR", "EN", "VU", "NT", "LC"),
+      ordered = TRUE
+    ), 
+    EU_redlist = factor(
+      EU_redlist,
+      levels = c("CR", "EN", "VU", "NT", "LC"),   
+      ordered = TRUE
+    ),
+    # simplified redlist cats
+    IUCN_redlist2 = factor(
+      IUCN_redlist2,
+      levels = c("Threatened", "Not Threatened"),
+      ordered = TRUE
+    ), 
+    EU_redlist2 = factor(
+      EU_redlist2,
+      levels = c("Threatened", "Not Threatened"),   
+      ordered = TRUE
+    ),
+    migration_status = factor(
+      migration_status),
+    ecosystem_cat = factor(
+      ecosystem_cat),
+    scenario = factor(scenario)  # scenario as factor for interactions
+  )
+
+# df with only`Nc-estimate` == "mean"
+df_relations_long_mean <- df_relations_long %>%
+  filter(`Nc-estimate` == "mean")
+
+# df with only`Nc-estimate` == "min"
+df_relations_long_min <- df_relations_long %>%
+  filter(`Nc-estimate` == "min")
+
+# df with only`Nc-estimate` == "max"
+df_relations_long_max <- df_relations_long %>%
+  filter(`Nc-estimate` == "max")
+
+# df with only`Nc-estimate` == "mean" and scenario == "2"
+df_relations_long_mean_2 <- df_relations_long_mean %>%
+  filter(scenario == "2")
+# df with only`Nc-estimate` == "mean" and scenario == "4"
+df_relations_long_mean_4 <- df_relations_long_mean %>%
+  filter(scenario == "4")
+# df with only`Nc-estimate` == "mean" and scenario == "1"
+df_relations_long_mean_1 <- df_relations_long_mean %>%
+  filter(scenario == "1")
+
+# df with only`Nc-estimate` == "min" and scenario == "2"
+df_relations_long_min_2 <- df_relations_long_min %>%
+  filter(scenario == "2")
+# df with only`Nc-estimate` == "min" and scenario == "4"
+df_relations_long_min_4 <- df_relations_long_min %>%
+  filter(scenario == "4")
+# df with only`Nc-estimate` == "min" and scenario == "1"
+df_relations_long_min_1 <- df_relations_long_min %>%
+  filter(scenario == "1")
+
+# df with only`Nc-estimate` == "max" and scenario == "2"
+df_relations_long_max_2 <- df_relations_long_max %>%
+  filter(scenario == "2")
+# df with only`Nc-estimate` == "max" and scenario == "4"
+df_relations_long_max_4 <- df_relations_long_max %>%
+  filter(scenario == "4")
+# df with only`Nc-estimate` == "max" and scenario == "1"
+df_relations_long_max_1 <- df_relations_long_max %>%
+  filter(scenario == "1")
+```
+3.2. Calculate counts for the categorical explanatory variables and create labels with counts and for each ratio
+We want to calculate how many species are found for each category of each of the categorical variables. These counts are used for plotting of figures. 
+
+```{r}
+# counts per categorical variable
+counts_migration<- df_relations %>%
+  group_by(migration_status) %>%
+  summarise(n = n(), .groups = "drop")
+counts_ecosystem<- df_relations %>%
+  group_by(ecosystem_cat) %>%
+  summarise(n = n(), .groups = "drop")
+counts_EU_redlist<- df_relations %>%
+  group_by(EU_redlist) %>%
+  summarise(n = n(), .groups = "drop")
+counts_IUCN_redlist<- df_relations %>%
+  group_by(IUCN_redlist) %>%
+  summarise(n = n(), .groups = "drop")
+counts_EU_redlist2<- df_relations %>%
+  group_by(EU_redlist2) %>%
+  summarise(n = n(), .groups = "drop")
+counts_IUCN_redlist2<- df_relations %>%
+  group_by(IUCN_redlist2) %>%
+  summarise(n = n(), .groups = "drop")
+
+# create labels with counts
+labels_with_counts_migr <- counts_migration %>%
+  mutate(label = paste0(migration_status, " (n = ", n, ")")) %>%
+  select(migration_status, label)
+labels_with_counts_ecosys <- counts_ecosystem %>%
+  mutate(label = paste0(ecosystem_cat, " (n = ", n, ")")) %>%
+  select(ecosystem_cat, label)
+labels_with_counts_EU_RL <- counts_EU_redlist %>%
+  mutate(label = paste0(EU_redlist, " (n = ", n, ")")) %>%
+  select(EU_redlist, label)
+labels_with_counts_IUCN_RL <- counts_IUCN_redlist %>%
+  mutate(label = paste0(IUCN_redlist, " (n = ", n, ")")) %>%
+  select(IUCN_redlist, label)
+labels_with_counts_EU_RL2 <- counts_EU_redlist2 %>%
+  mutate(label = paste0(EU_redlist2, " (n = ", n, ")")) %>%
+  select(EU_redlist2, label)
+labels_with_counts_IUCN_RL2 <- counts_IUCN_redlist2 %>%
+  mutate(label = paste0(IUCN_redlist2, " (n = ", n, ")")) %>%
+  select(IUCN_redlist2, label)
+
+# create scenario (=Ne/Nc-ratio) labels
+scenario_labels <- c(
+  "1" = "Ne/Nc = 0.1",
+  "2" = "Ne/Nc = 0.2",
+  "4" = "Ne/Nc = 0.4"
+)
+```
+3.3. create vector with the colours used by IUCN to assess species
+
+```{r}
+# colours for violinplots redlists
+iucn_colors <- c(
+  "LC" = "#60C659",
+  "NT" = "#CCE226",
+  "VU" = "#F9E814",
+  "EN" = "#FC7F3F",
+  "CR" = "#D81E05"
+)
+simplified_colours <- c(
+  "Not Threatened" = "#60C659",
+  "Threatened" = "#D81E05"
+)
+```
+
+3.4. create violinplots showing the overall distributions
+```{r}
+# general overview ne500 (all NC-estimates)
+general_ne500_violin_all <- ggplot(df_relations_long, 
+                                   aes(x = `Nc-estimate`, y = Ne500)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 0.5, color = "black") +
+  geom_quasirandom(width = 0.15, size = 1.5, alpha = 0.7, color = "black") +
+  facet_wrap(~ scenario, nrow = 1, labeller = as_labeller(scenario_labels)) +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "Estimate Type", y = "Proportion Ne≥500") +
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x  = element_text(size = 12, angle = 90),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 16, face = "bold"),
+    legend.position = "none" # Hide legend since x-axis already labels them
+  )
+general_ne500_violin_all
+
+general_ne500_violinboxplot_all <- ggplot(df_relations_long, 
+                                   aes(x = `Nc-estimate`, y = Ne500)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 0.5, color = "black") +
+  geom_quasirandom(width = 0.15, size = 1.5, alpha = 0.7, color = "black") +
+  #jitter befor boxplot, otherwise boxplot is overdrawn by jitter ;)
+  geom_boxplot(
+  width = 0.15,
+  outlier.shape = NA,
+  fill = "white",
+  color = "black", 
+  alpha = 0.5
+) +
+  facet_wrap(~ scenario, nrow = 1, labeller = as_labeller(scenario_labels)) +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "Estimate Nc-Type", y = "Proportion Ne≥500") +
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x  = element_text(size = 12, angle = 90),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 16, face = "bold"),
+    legend.position = "none" # Hide legend since x-axis already labels them
+  )
+general_ne500_violinboxplot_all
+
+general_ne500_violinboxplot_all2 <- ggplot(df_relations_long, 
+                                   aes(x = `Nc-estimate`, y = Ne500)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 0.5, color = "black") +
+  geom_quasirandom(width = 0.15, size = 1.5, alpha = 0.7, color = "black") +
+  geom_boxplot(
+    width = 0.15,
+    outlier.shape = NA,
+    fill = "white",
+    color = "black", 
+    alpha = 0.5
+  ) +
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    shape = 23,        # diamond shape
+    size = 3,
+    fill = "red",      # fill colour of diamond
+    color = "black"    # border colour
+  ) +
+  facet_wrap(~ scenario, nrow = 1, labeller = as_labeller(scenario_labels)) +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "Estimate Nc-Type", y = "Proportion Ne≥500") +
+  theme(
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16, face = "bold"),
+    axis.text.x  = element_text(size = 14, angle = 90),
+    axis.text.y  = element_text(size = 14),
+    strip.text   = element_text(size = 16, face = "bold"),
+    legend.position = "none"
+  )
+general_ne500_violinboxplot_all2
+
+df_relations_long %>%
+  group_by(scenario, `Nc-estimate`) %>%
+  summarise(
+    Q1 = quantile(Ne500, 0.25,na.rm = TRUE),
+    Median = median(Ne500),
+    Q3 = quantile(Ne500, 0.75,na.rm = TRUE),
+    LowerWhisker = min(Ne500[Ne500 >= (Q1 - 1.5 * IQR(Ne500))]),
+    UpperWhisker = max(Ne500[Ne500 <= (Q3 + 1.5 * IQR(Ne500))])
+  )
+
+
+# general overview ne500 (mean NC-estimates)
+general_ne500_violin_mean <- ggplot(df_relations_long_mean, aes(x = "Nc-estimate", y = Ne500)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 0.5, color ="black") +
+  geom_quasirandom(width = 0.15, size = 1.5, alpha = 0.7, color = "black") +
+  facet_wrap(~ scenario, nrow = 1, labeller = as_labeller(scenario_labels)) +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "", y = "Proportion Ne≥500") +
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x  = element_text(size = 12, angle = 90),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 16, face = "bold")  # 👈 facet labels
+  )
+general_ne500_violin_mean
+
+# migration status
+ne500_migration_violin <- ggplot(df_relations_long_mean, aes(x = migration_status, y = Ne500)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 1, color = "black") +
+  facet_wrap(~ scenario, nrow = 1,
+             labeller = as_labeller(scenario_labels)) +
+  scale_x_discrete(
+    labels = setNames(labels_with_counts_migr$label, labels_with_counts_migr$migration_status)
+  ) +
+  #scale_fill_manual(
+    #values = iucn_colors,
+    #limits = c("LC", "NT", "VU", "EN"), #leave "CR" out of this, it is established that there were too little entries with "CR" IUCN-assessment for violin plot making
+    #name = "IUCN Red List") +
+  geom_quasirandom(
+    width = 0.2,
+    size = 1.5,
+    alpha = 0.6,
+    color = "gray40"
+  ) +
+  theme_minimal() +
+  labs(
+    x = "Migratory status",
+    y = "Proportion Ne≥500"
+  ) +
+  coord_flip() +
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x  = element_text(size = 12, angle = 90),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 16, face = "bold")  # 👈 facet labels
+  )
+ne500_migration_violin
+
+# migration status
+ne500_migration_violinboxplot <- ggplot(df_relations_long_mean, aes(x = migration_status, y = Ne500)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 1, color = "black") +
+  facet_wrap(~ scenario, nrow = 1,
+             labeller = as_labeller(scenario_labels)) +
+  scale_x_discrete(
+    # AANGEPAST: gsub() vervangt hier alle underscores door spaties in de labels
+    labels = setNames(
+      gsub("_", " ", labels_with_counts_migr$label), 
+      labels_with_counts_migr$migration_status
+    )
+  ) +
+  geom_quasirandom(
+    width = 0.2,
+    size = 1.5,
+    alpha = 0.6,
+    color = "gray40"
+  ) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.shape = NA,
+    fill = "white",
+    color = "gray40", 
+    alpha = 0.5
+  ) +
+  theme_minimal() +
+  labs(
+    x = "Migratory status",
+    y = "Proportion Ne≥500"
+  ) +
+  coord_flip() +
+  theme(
+    axis.title.x = element_text(size = 16, face ="bold"),
+    axis.title.y = element_text(size = 16, face ="bold"),
+    axis.text.x  = element_text(size = 14, angle = 90),
+    axis.text.y  = element_text(size = 14),
+    strip.text   = element_text(size = 16, face = "bold")
+  )
+
+ne500_migration_violinboxplot
+
+
+
+# EU and IUCN red list
+ne500_EU_violinboxplot <- ggplot(df_relations_long_mean, aes(x = EU_redlist, y = Ne500, fill = EU_redlist)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 1, color = NA) +
+  facet_wrap(~ scenario, nrow = 1,
+             labeller = as_labeller(scenario_labels)) +
+  scale_x_discrete(
+    labels = setNames(labels_with_counts_EU_RL$label, labels_with_counts_EU_RL$EU_redlist)
+  ) +
+  scale_fill_manual(
+  values = iucn_colors,
+  limits = c("LC", "NT", "VU", "EN", "CR"), 
+  name = "EU Red List") +
+  geom_quasirandom(
+    width = 0.2,
+    size = 1.5,
+    alpha = 0.6,
+    color = "gray40"
+  ) +
+  geom_boxplot(
+  width = 0.15,
+  outlier.shape = NA,
+  fill = "white",
+  color = "white", 
+  alpha = 0.5
+) +
+  theme_minimal() +
+  labs(
+    title = "",
+    x = "",
+    y = "Proportion Ne≥500"
+  ) +
+  coord_flip() +
+  theme(
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16),
+    axis.text.x  = element_text(size = 14, angle = 90),
+    axis.text.y  = element_text(size = 14),
+    strip.text   = element_text(size = 16, face = "bold")  # 👈 facet labels
+  )
+ne500_EU_violinboxplot
+
+# EU plot violin + boxplot with simplified categories
+ne500_EU_violinboxplot_simplified <- ggplot(df_relations_long_mean, aes(x = EU_redlist2, y = Ne500, fill = EU_redlist2)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 1, color = NA) +
+  facet_wrap(~ scenario, nrow = 1,
+             labeller = as_labeller(scenario_labels)) +
+  scale_x_discrete(
+    labels = setNames(labels_with_counts_EU_RL2$label, labels_with_counts_EU_RL2$EU_redlist2)
+  ) +
+  scale_fill_manual(
+  values = simplified_colours,
+  limits = c("Threatened", "Not Threatened"), 
+  name = "EU Red List (simplified categories)") +
+  geom_quasirandom(
+    width = 0.2,
+    size = 1.5,
+    alpha = 0.6,
+    color = "gray40"
+  ) +
+  geom_boxplot(
+  width = 0.15,
+  outlier.shape = NA,
+  fill = "white",
+  color = "white", 
+  alpha = 0.5
+) +
+  theme_minimal() +
+  labs(
+    title = "b. EU Red list (simplified categories)",
+    x = "",
+    y = "Proportion Ne≥500"
+  ) +
+  coord_flip() +
+  theme(
+    plot.title = element_text(size = 25),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x  = element_text(size = 12, angle = 90),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 16, face = "bold")  # 👈 facet labels
+  )
+ne500_EU_violinboxplot_simplified
+
+# IUCN violin
+ne500_IUCN_violin <- ggplot(df_relations_long_mean, aes(x = IUCN_redlist, y = Ne500, fill = IUCN_redlist)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 1, color = NA) +
+  facet_wrap(~ scenario, nrow = 1,
+             labeller = as_labeller(scenario_labels)) +
+  scale_x_discrete(
+    labels = setNames(labels_with_counts_IUCN_RL$label, labels_with_counts_IUCN_RL$IUCN_redlist)
+  ) +
+  scale_fill_manual(
+    values = iucn_colors,
+    limits = c("LC", "NT", "VU", "EN"), 
+    name = "IUCN Red List") +
+  geom_quasirandom(
+    width = 0.2,
+    size = 1.5,
+    alpha = 0.6,
+    color = "gray40"
+  ) +
+  theme_minimal() +
+  labs(
+    x = "",
+    y = "Proportion Ne≥500"
+  ) +
+  coord_flip() +
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x  = element_text(size = 12, angle = 90),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 16, face = "bold")  # 👈 facet labels
+  ) 
+ne500_IUCN_violin
+
+# IUCN violin + boxplot
+ne500_IUCN_violinboxplot <- ggplot(df_relations_long_mean, aes(x = IUCN_redlist, y = Ne500, fill = IUCN_redlist)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 1, color = NA) +
+  geom_quasirandom(
+    width = 0.2,
+    size = 1.5,
+    alpha = 0.6,
+    color = "gray40"
+  ) +        #jitter befor boxplot, otherwise boxplot is overdrawn by jitter ;)
+  geom_boxplot(
+  width = 0.15,
+  outlier.shape = NA,
+  fill = "white",
+  color = "white", 
+  alpha = 0.5
+) +
+  facet_wrap(~ scenario, nrow = 1,
+             labeller = as_labeller(scenario_labels)) +
+  scale_x_discrete(
+    labels = setNames(labels_with_counts_IUCN_RL$label, labels_with_counts_IUCN_RL$IUCN_redlist)
+  ) +
+  scale_fill_manual(
+    values = iucn_colors,
+    limits = c("LC", "NT", "VU", "EN"), 
+    name = "IUCN Red List") +
+  theme_minimal() +
+  labs(
+    title = "a. IUCN Red list",
+    x = "",
+    y = "Proportion Ne≥500"
+  ) +
+  coord_flip() +
+  theme(
+    plot.title = element_text(size = 25),
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16, face = "bold"),
+    axis.text.x  = element_text(size = 14, angle = 90),
+    axis.text.y  = element_text(size = 14),
+    strip.text   = element_text(size = 16, face = "bold")  # 👈 facet labels
+  )
+ne500_IUCN_violinboxplot
+
+# IUCN plot violin + boxplot with simplified categories
+ne500_IUCN_violinboxplot_simplified <- ggplot(df_relations_long_mean, aes(x = IUCN_redlist2, y = Ne500, fill = IUCN_redlist2)) +
+  geom_violin(trim = TRUE, scale = "width", alpha = 1, color = NA) +
+  facet_wrap(~ scenario, nrow = 1,
+             labeller = as_labeller(scenario_labels)) +
+  scale_x_discrete(
+    labels = setNames(labels_with_counts_IUCN_RL2$label, labels_with_counts_IUCN_RL2$IUCN_redlist2)
+  ) +
+  scale_fill_manual(
+  values = simplified_colours,
+  limits = c("Threatened", "Not Threatened"), 
+  name = "IUCN Red List (simplified categories") +
+  geom_quasirandom(
+    width = 0.2,
+    size = 1.5,
+    alpha = 0.6,
+    color = "gray40"
+  ) +
+  geom_boxplot(
+  width = 0.15,
+  outlier.shape = NA,
+  fill = "white",
+  color = "white", 
+  alpha = 0.5
+) +
+  theme_minimal() +
+  labs(
+    title = "b. IUCN Red list (simplified categories)",
+    x = "",
+    y = "Proportion Ne≥500"
+  ) +
+  coord_flip() +
+  theme(
+    plot.title = element_text(size = 25),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x  = element_text(size = 12, angle = 90),
+    axis.text.y  = element_text(size = 12),
+    strip.text   = element_text(size = 16, face = "bold")  # 👈 facet labels
+  )
+ne500_IUCN_violinboxplot_simplified
+
+# Combine IUCN and EU pies with shared legend and global title
+# Remove legend from IUCN plot
+ne500_IUCN_violinboxplot_noleg <- ne500_IUCN_violinboxplot +
+  theme(legend.position = "none")
+
+ne500_EU_violinboxplot2 <- ne500_EU_violinboxplot + 
+  scale_fill_manual(
+    values = iucn_colors,
+    limits = c("LC", "NT", "VU", "EN", "CR"), 
+    name = "Red List Status"  # Make the same name as IUCN
+  )
+
+# Combine plots with shared legend
+combined_redlist <- (ne500_IUCN_violinboxplot_noleg | ne500_EU_violinboxplot2)
+combined_redlist
+
+# Combine IUCN and EU pies with shared legend and global title, simplified categories
+# Remove legend from IUCN plot
+ne500_IUCN_violinboxplot_simplified_noleg2 <- ne500_IUCN_violinboxplot_simplified +
+  theme(legend.position = "none")
+
+ne500_EU_violinboxplot_simplified2 <- ne500_EU_violinboxplot_simplified + 
+  scale_fill_manual(
+    values = simplified_colours,
+    limits = c("Threatened", "Not Threatened"), 
+    name = "Red List Status (simplified categories)"  # Make the same name as IUCN
+  )
+
+# Combine plots with shared legend
+combined_redlist <- (ne500_IUCN_violinboxplot_simplified_noleg2 | ne500_EU_violinboxplot_simplified2)
+combined_redlist
+
+```
+4. Do the correlation analyses with NE500 being the response variable and species specific traits as explanatory variables
+```{r}
+#---------------------------------------- 
+# Settings 
+#----------------------------------------
+vars <- c("num_populations", 
+          "EU_redlist",
+          "migration_status", 
+          "generation_length", 
+          "occurrence", 
+          "LT_change",
+          "ST_change_mean")
+
+# Identification of categorical vars
+categorical_vars <- c("EU_redlist", 
+                      "migration_status")
+
+# List to save vars
+results_list <- list()
+
+plot_emmeans_facet <- function(em, varname, response_name){
+  em_df <- as.data.frame(em)
+  
+  ggplot(em_df, aes_string(x = varname, y = "emmean")) +
+    geom_point(size = 3) +
+    geom_errorbar(
+      aes(ymin = lower.CL, ymax = upper.CL),
+      width = 0.2
+    ) +
+    facet_wrap(~ scenario,
+               labeller = labeller(scenario = scenario_labels))+
+    labs(
+      title = paste("Estimated marginal means of", response_name),
+      subtitle = paste("by", varname, "per scenario"),
+      y = paste(response_name, "(estimated)"),
+      x = varname
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(
+      strip.text = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+}
+
+get_n_by_group <- function(data, var){
+  data %>%
+    group_by(.data[[var]], scenario) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    rename(level = 1)
+} 
+
+```
+4.1 Now follows the script to loop the correlation analyses between the different variables, NE500 is always the response variable. 
+4.2 this is the correct script to loop the correlation analyses 
+```{r}
+cont_plots <- list()
+emmeans_plots <- list()
+cont_plots_s2 <- list()
+
+pretty_labels <- c(
+  "num_populations" = "a. Number of populations",
+  "generation_length" = "b. Generation length",
+  "occurrence" = "c. Occurrence",
+  "LT_change" = "d. LT-change",
+  "ST_change_mean" = "e. ST-change (mean Nc)", 
+  "IUCN_redlist" = "IUCN Red List", 
+  "EU_redlist" = "a. EU Red List", 
+  "migration_status" = "b. Migration status", 
+  "IUCN_redlist2" = "IUCN Red List (simplified categories)", 
+  "EU_redlist2" = "EU Red List (simplified categories)")
+
+for(v in vars){
+  cat("\n==================== Variable:", v, "vs Ne500 ====================\n")
+  
+  formula_text <- paste0("Ne500 ~ (", v, ") * scenario + (1 | scientificname)")
+  model <- lmer(as.formula(formula_text), data=df_relations_long_mean)
+  
+  results_list[[paste0(v, "_Ne500")]] <- list(model = model)
+  
+  print(summary(model))
+  
+  plot(residuals(model), main=paste("Residuals:", v))
+  qqnorm(residuals(model), main=paste("Q-Q plot:", v))
+  qqline(residuals(model))
+  
+  if(v %in% categorical_vars){
+    cat("\n--- Post-hoc Tukey comparisons for", v, "---\n")
+    
+    em <- emmeans(model, specs = c(v, "scenario"))
+    print(em)
+    print(pairs(em, by = "scenario", adjust = "tukey"))
+    
+    # extract compact letter display for significance stars
+    sig_letters <- multcomp::cld(em, by = "scenario", adjust = "tukey", Letters = letters) %>%
+      as.data.frame() %>%
+      rename(level = !!v) %>%
+      mutate(
+        level = as.character(level),
+        scenario = as.character(scenario),
+        .group = trimws(.group)
+      )
+
+    n_df <- get_n_by_group(df_relations_long_mean, v)
+    
+    em_df <- as.data.frame(em) %>%
+      rename(level = !!v) %>%
+      mutate(
+        level = as.character(level),
+        scenario = as.character(scenario)
+      )
+    
+    n_df <- n_df %>%
+      mutate(
+        level = as.character(level),
+        scenario = as.character(scenario)
+      )
+    
+    em_df <- left_join(em_df, n_df, by = c("level", "scenario"))
+    em_df <- em_df %>%
+      mutate(
+        lower.CL = ifelse(n > 1, lower.CL, NA),
+        upper.CL = ifelse(n > 1, upper.CL, NA)
+      )
+
+    # 1. compile lables with n
+    em_df <- em_df %>%
+      mutate(label = paste0(level, "\n(n = ", n, ")"))
+
+    # 2. Change underscores into space in the lables
+    em_df <- em_df %>%
+      mutate(label = gsub("_", " ", label))
+
+    # 3. change to factor
+    if(v %in% c("IUCN_redlist", "EU_redlist", "IUCN_redlist2", "EU_redlist2")){
+      ordered_levels <- c("CR", "EN", "VU", "NT", "LC")
+      
+      expected_levels <- paste0(ordered_levels, "\n(n = ", n_df$n[match(ordered_levels, n_df$level)], ")")
+      expected_levels <- gsub("_", " ", expected_levels)
+      
+      em_df <- em_df %>%
+        mutate(
+          level = factor(level, levels = ordered_levels),
+          label = factor(label, levels = expected_levels)
+        )
+    } else {
+      orig_levels <- levels(df_relations_long_mean[[v]])
+      
+      expected_levels <- paste0(orig_levels, "\n(n = ", n_df$n[match(orig_levels, n_df$level)], ")")
+      expected_levels <- gsub("_", " ", expected_levels)
+      
+      em_df <- em_df %>%
+        mutate(
+          label = factor(label, levels = expected_levels)
+        )
+    }
+
+    # join significance letters into em_df
+    em_df <- left_join(em_df, sig_letters %>% dplyr::select(level, scenario, .group),
+                       by = c("level", "scenario"))
+
+    # level no underscores for colour palette 
+    em_df <- em_df %>% 
+      mutate(level = gsub("_", " ", level))
+
+    # Red list with colours, other black
+    if(v %in% c("IUCN_redlist", "EU_redlist", "IUCN_redlist2", "EU_redlist2")) {
+      p <- ggplot(em_df, aes(x = label, y = emmean, colour = level))
+    } else {
+      p <- ggplot(em_df, aes(x = label, y = emmean))
+    }
+
+    p <- p +
+      geom_point(size = 3) +
+      geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.2, na.rm = TRUE) +
+      geom_text(aes(y = upper.CL + 0.15, label = .group), na.rm = TRUE, size = 5, colour = "black") +
+      facet_wrap(~ scenario, labeller = labeller(scenario = scenario_labels)) +
+      labs(
+        x = "",
+        y = "EMMs of proportion Ne≥500",
+        title = ifelse(v %in% names(pretty_labels), pretty_labels[v], v)
+      ) +
+      theme_bw() +
+      theme(
+        # AANGEPAST: angle = 45, hjust = 1 & vjust = 1 voorkomt overlap van x-as labels
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 1, size = 14),
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text.y = element_text(size = 14),
+        strip.text = element_text(size = 14),
+        legend.position = "none" # Legenda verborgen omdat x-as categorieën al benoemt
+      )
+    
+    # NIEUW: Voeg het kleurenpalet toe voor Red List variabelen
+    if(v %in% c("IUCN_redlist", "EU_redlist")){
+      p <- p + scale_colour_manual(values = iucn_colors)
+    } else if(v %in% c("IUCN_redlist2", "EU_redlist2")){
+      p <- p + scale_colour_manual(values = simplified_colours)
+    }
+
+    emmeans_plots[[v]] <- p
+    print(p)
+    
+    results_list[[v]]$emmeans <- em
+    results_list[[v]]$emmeans_plot <- p
+    results_list[[v]]$n_per_group <- n_df
+  }
+
+  if(!(v %in% categorical_vars)){
+    
+    f_lin <- paste0("Ne500 ~ ", v, " * scenario + (1 | scientificname)")
+    m_lin <- lmer(as.formula(f_lin), data = df_relations_long_mean, REML = FALSE)
+    
+    f_quad <- paste0("Ne500 ~ poly(", v, ", 2, raw = TRUE) * scenario + (1 | scientificname)")
+    m_quad <- lmer(as.formula(f_quad), data = df_relations_long_mean, REML = FALSE)
+    
+    aic_tab <- AIC(m_lin, m_quad)
+    print(aic_tab)
+    
+    if(aic_tab$AIC[2] + 2 < aic_tab$AIC[1]){
+      best_model <- m_quad
+      model_type <- "quadratic"
+      cat("→ Selected QUADRATIC model for", v, "\n")
+    } else {
+      best_model <- m_lin
+      model_type <- "linear"
+      cat("→ Selected LINEAR model for", v, "\n")
+    }
+    
+    print(summary(best_model))
+    
+    x_range <- range(df_relations_long_mean[[v]], na.rm = TRUE)
+
+    pred <- ggpredict(best_model, terms = c(paste0(v, " [all]"), "scenario"))
+    
+    p_pred <- ggplot(pred, aes(x = x, y = predicted, colour = group, fill = group)) +
+      geom_line(size = 1) +
+      geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, colour = NA) +
+      theme_bw() +
+      labs(
+        title = paste("Model-based predictions of Ne500"),
+        subtitle = paste("(", model_type, "effect )"),
+        x = ifelse(v %in% names(pretty_labels), pretty_labels[v], v),  
+        y = "Predicted proportion Ne≥500",
+        colour = "Ratio",
+        fill = "Ratio"
+      ) +
+      scale_colour_manual(values = c("#966fd6","#F0E442","#0072B2"), labels = scenario_labels) +
+      scale_fill_manual(values = c("#966fd6","#F0E442","#0072B2"), labels = scenario_labels) +
+      theme(
+        axis.title.y = element_text(size = 16, face = "bold"),
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 14)
+      )
+    cont_plots[[v]] <- p_pred
+    
+    # extra plot for scenario 2 only
+    pred_s2 <- pred %>% filter(group == "2")
+    
+    p_pred_s2 <- ggplot(pred_s2, aes(x = x, y = predicted)) +
+      geom_line(size = 1, colour = "#F0E442") +
+      geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "#F0E442") +
+      theme_bw() +
+      labs(
+        title = paste("Model-based predictions of Ne500"),
+        subtitle = paste("(", model_type, "effect ) - Ne/Nc = 0,2"),
+        x = ifelse(v %in% names(pretty_labels), pretty_labels[v], v),
+        y = "Predicted proportion Ne≥500"
+      ) +
+      theme(
+        axis.title.y = element_text(size = 16, face = "bold"),
+        axis.title.x = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 14)
+      )
+    cont_plots_s2[[v]] <- p_pred_s2
+    print(p_pred_s2)
+    print(p_pred)
+    
+    results_list[[paste0(v, "_Ne500")]] <- list(
+      model = best_model,
+      model_type = model_type,
+      AIC = aic_tab,
+      prediction_plot = p_pred
+    )
+  }
+}
+
+cont_combined <- wrap_plots(cont_plots, ncol = 2) +
+  plot_layout(
+    heights = rep(1, ceiling(length(cont_plots)/2)), 
+    guides = "collect",
+    axis_titles = "collect"
+  ) &
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 14, face = "bold"), # Titel van de legende: 14 + bold
+    legend.text = element_text(size = 14),                 # Categorieën in de legende: 14
+    axis.title = element_text(size = 16, face = "bold"),   # Verzamelde astitels: 16 + bold
+    axis.text = element_text(size = 14),                   # As-labels (x en y): 14
+    strip.text = element_text(size = 14),                  # Facet headers (indien aanwezig): 14
+    plot.title = element_blank(),                          # Subplot titels (verborgen)
+    plot.subtitle = element_blank()                        # Subplot subtitels (verborgen)
+  )
+
+print(cont_combined)
+
+# combined plot for scenario 2 only
+cont_combined_s2 <- wrap_plots(cont_plots_s2, ncol = 2) +
+  plot_layout(
+    heights = rep(1, ceiling(length(cont_plots_s2)/2)),
+    axis_titles = "collect"
+  ) &
+  theme(plot.title = element_blank(), plot.subtitle = element_blank())
+
+cont_combined_s2 <- cont_combined_s2 +
+  plot_annotation(title = "Model-based predictions of proportion Ne≥500 (Ne/Nc = 0,2)")
+
+print(cont_combined_s2)
+
+emmeans_combined <- wrap_plots(emmeans_plots, ncol = 1) +
+  plot_layout(
+    heights = rep(1, ceiling(length(emmeans_plots))),  
+    guides = "collect",
+    axis_titles = "collect"
+  ) &
+  theme(
+    legend.position = "none", # Geen legende meer
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.title = element_text(size = 16, face = "bold"), # Aangepast: astitels grootte 16 en bold
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = 10), 
+    axis.text.y = element_text(size = 14) 
+  ) 
+
+print(emmeans_combined)
+```
+# lastly we want to test whether there is a correlation between GM and red list assessments
+```{r}
+# GM vs IUCN Red List
+cat("Fisher's exact test: GM vs IUCN Red List\n")
+tbl_IUCN <- table(df_relations_long_mean$GM, df_relations_long_mean$IUCN_redlist)
+print(tbl_IUCN)
+fisher_IUCN <- fisher.test(tbl_IUCN)
+print(fisher_IUCN)
+
+# Effect size: Cramér's V
+cat("\nEffect size (Cramér's V): GM vs IUCN Red List\n")
+cramers_v_IUCN <- rcompanion::cramerV(tbl_IUCN, bias.correct = TRUE)
+print(cramers_v_IUCN)
+
+# GM vs EU Red List
+cat("\nFisher's exact test: GM vs EU Red List\n")
+tbl_EU <- table(df_relations_long_mean$GM, df_relations_long_mean$EU_redlist)
+print(tbl_EU)
+fisher_EU <- fisher.test(tbl_EU)
+print(fisher_EU)
+
+# Effect size: Cramér's V
+cat("\nEffect size (Cramér's V): GM vs EU Red List\n")
+cramers_v_EU <- rcompanion::cramerV(tbl_EU, bias.correct = TRUE)
+print(cramers_v_EU)
+```
+```{r}
+#calculate mean and median values for the indicators ne500 and PM, mean nc estimates and ratio 0.2
+df_relations_long_mean_2$PM_num <- as.numeric(as.character(df_relations_long_mean_2$PM))
+# Berekening van de statistieken
+summary_stats2 <- df_relations_long_mean_2 %>%
+  # Voor de zekerheid: zorg dat PM numeriek is
+  mutate(PM_num = as.numeric(as.character(PM))) %>%
+  summarise(
+    across(
+      c(Ne500, PM_num), 
+      list(
+        mean   = ~mean(.x, na.rm = TRUE),
+        se     = ~sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x))),
+        median = ~median(.x, na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+summary_stats2
+
+#calculate mean and median values for the indicators ne500 and PM, mean nc estimates and ratio 0.4
+df_relations_long_mean_4$PM_num <- as.numeric(as.character(df_relations_long_mean_4$PM))
+# Berekening van de statistieken
+summary_stats4 <- df_relations_long_mean_4 %>%
+  # Voor de zekerheid: zorg dat PM numeriek is
+  mutate(PM_num = as.numeric(as.character(PM))) %>%
+  summarise(
+    across(
+      c(Ne500, PM_num), 
+      list(
+        mean   = ~mean(.x, na.rm = TRUE),
+        se     = ~sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x))),
+        median = ~median(.x, na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+summary_stats4
+#calculate mean and median values for the indicators ne500 and PM, mean nc estimates and ratio 0.1
+df_relations_long_mean_1$PM_num <- as.numeric(as.character(df_relations_long_mean_1$PM))
+# Berekening van de statistieken
+summary_stats1 <- df_relations_long_mean_1 %>%
+  # Voor de zekerheid: zorg dat PM numeriek is
+  mutate(PM_num = as.numeric(as.character(PM))) %>%
+  summarise(
+    across(
+      c(Ne500, PM_num), 
+      list(
+        mean   = ~mean(.x, na.rm = TRUE),
+        se     = ~sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x))),
+        median = ~median(.x, na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+summary_stats1
+
+```
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+# All combinations of x (min, mean, max) and y (1, 2, 4)
+combos <- expand.grid(
+  x = c("min", "mean", "max"),
+  y = c(1, 2, 4),
+  stringsAsFactors = FALSE
+)
+
+summary_list <- pmap(combos, function(x, y) {
+  df_name <- paste0("df_relations_long_", x, "_", y)
+  
+  # Skip gracefully if the object doesn't exist
+  if (!exists(df_name)) {
+    warning(paste("Object not found:", df_name))
+    return(NULL)
+  }
+  
+  df <- get(df_name)
+  
+  df %>%
+    mutate(PM_num = as.numeric(as.character(PM))) %>%
+    summarise(
+      across(
+        c(Ne500, PM_num),
+        list(
+          mean   = ~mean(.x, na.rm = TRUE),
+          se     = ~sd(.x, na.rm = TRUE) / sqrt(sum(!is.na(.x))),
+          median = ~median(.x, na.rm = TRUE)
+        ),
+        .names = "{.col}_{.fn}"
+      )
+    ) %>%
+    mutate(estimate = x, ratio = y, .before = 1)
+})
+
+# Combine into one dataframe, dropping any NULLs from missing objects
+summary_stats_all <- bind_rows(summary_list)
+
+summary_stats_all
+``` 
+```{r}
+# -------------------------------------------------------------------------
+# 5. Correlation between PM (numerical) and EU_redlist (categorical)
+# -------------------------------------------------------------------------
+#double check if PM_num is in fact numerical
+# --- Visualization ---
+# A boxplot with quasirandom jitter to visualize PM distribution across Red List categories
+PM_EU_plot <- ggplot(df_relations_long_mean_2, aes(x = EU_redlist, y = PM_num, fill = EU_redlist)) +
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) +
+  geom_quasirandom(width = 0.2, size = 1.5, alpha = 0.6, color = "gray40") +
+  scale_fill_manual(
+    values = iucn_colors,
+    name = "EU Red List"
+  ) +
+  theme_minimal() +
+  labs(
+    title = "PM Indicator by EU Red List Status",
+    x = "EU Red List Assessment",
+    y = "PM Indicator (Numeric)"
+  ) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x  = element_text(size = 12),
+    axis.text.y  = element_text(size = 12),
+    legend.position = "none"
+  )
+
+print(PM_EU_plot)
+
+# --- Statistical Tests ---
+
+# 1. Kruskal-Wallis Rank Sum Test (Non-parametric)
+# Recommended if PM_num does not meet the assumptions of normality and homogeneity of variances
+cat("\n==================== Kruskal-Wallis Test ====================\n")
+cat("Testing: PM_num vs EU_redlist\n\n")
+kw_test_PM_EU <- kruskal.test(PM_num ~ EU_redlist, data = df_relations_long_mean_2)
+print(kw_test_PM_EU)
+
+# 2. One-Way ANOVA (Parametric)
+# Useful if the data is relatively normally distributed across groups
+cat("\n==================== One-Way ANOVA ====================\n")
+cat("Testing: PM_num vs EU_redlist\n\n")
+anova_PM_EU <- aov(PM_num ~ EU_redlist, data = df_relations_long_mean_2)
+print(summary(anova_PM_EU))
+
+# Post-hoc test (Tukey HSD) to see exactly which categories differ 
+# (Uncomment the lines below if the ANOVA yields a significant p-value)
+# cat("\n--- Tukey HSD Post-hoc Test ---\n")
+# print(TukeyHSD(anova_PM_EU))
+```
+
