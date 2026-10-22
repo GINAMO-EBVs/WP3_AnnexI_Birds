@@ -1,7 +1,6 @@
+THIS README IS TO BE UPDATED; LAST UPDATE: 22/10/2026
 # WP3_AnnexI_Birds
-This repo contains the Rscript used for the GI assessment of a selection of 187 bird species. 
-THIS README IS TO BE UPDATED
-LAST UPDATE: 22/10/2026
+This repo contains the Rscript used for the GI assessment of a selection of 187 bird species.
 
 # Metadata
 The metadata used to assess the 187 bird species can be found in the excel file titled metadata.xlsx
